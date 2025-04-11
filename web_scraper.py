@@ -1,38 +1,82 @@
+import time
+import logging
+import pandas as pd
+import schedule
 from selenium import webdriver
-from selenium.webdriver.chrome.service import Service
-from selenium.webdriver.chrome.options import Options
-from webdriver_manager.chrome import ChromeDriverManager
 from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
+from selenium.webdriver.chrome.service import Service
+from webdriver_manager.chrome import ChromeDriverManager
+from selenium.webdriver.chrome.options import Options
 
-# Set up Chrome options
-options = Options()
-options.add_argument("--start-maximized")
+# Setup logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
 
-# Start the driver
-driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
+def scrape_jobs():
+    logging.info("Scraping started...")
 
-# Open the website
-print("Scraping started...\n")
-driver.get("https://vacancymail.co.zw/jobs/")
+    try:
+        options = Options()
+        options.add_argument("--headless")
+        options.add_argument("--disable-gpu")
 
-try:
-    # Wait until job titles are present
-    WebDriverWait(driver, 10).until(
-        EC.presence_of_all_elements_located((By.CLASS_NAME, "job-listing-title"))
-    )
+        driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
+        driver.get("https://vacancymail.co.zw/jobs/")
 
-    # Find all job title elements
-    job_titles = driver.find_elements(By.CLASS_NAME, "job-listing-title")
+        job_data = []
 
-    print("Job Titles Found:\n")
-    for job in job_titles:
-        print("-", job.text)
+        job_cards = driver.find_elements(By.CLASS_NAME, "job-listing")
 
-except Exception as e:
-    print("Error extracting job titles:", e)
+        for job in job_cards[:10]:  # Only top 10 jobs
+            try:
+                title = job.find_element(By.CLASS_NAME, "job-listing-title").text
+                company = job.find_element(By.CLASS_NAME, "job-listing-company").text
+                description = job.find_element(By.CLASS_NAME, "job-listing-text").text
 
-# Close the driver
-driver.quit()
-print("\nScraping finished.")
+                # Footer fields
+                footer_items = job.find_elements(By.CSS_SELECTOR, ".job-listing-footer ul li")
+                location = ""
+                expiry_date = ""
+
+                for item in footer_items:
+                    text = item.text.strip()
+                    if "Expires" in text:
+                        expiry_date = text.replace("Expires", "").strip()
+                    elif not location and any(city in text for city in ["Harare", "Bulawayo", "Mutare", "Gweru", "Chitungwiza", "Masvingo"]):
+                        location = text
+
+                job_data.append({
+                    "Title": title,
+                    "Company": company,
+                    "Location": location,
+                    "Expiry Date": expiry_date,
+                    "Description": description
+                })
+
+            except Exception as e:
+                logging.warning(f"Error parsing a job listing: {e}")
+
+        df = pd.DataFrame(job_data)
+
+        # Clean and save data
+        df.drop_duplicates(inplace=True)
+        df.to_csv("scraped_data.csv", index=False)
+        logging.info("✅ Data saved to scraped_data.csv")
+
+        driver.quit()
+
+    except Exception as e:
+        logging.error(f"Scraping failed: {e}")
+
+    logging.info("Scraping finished.\n")
+
+# Run immediately and schedule every 2 minutes for demo/testing
+scrape_jobs()
+schedule.every(2).minutes.do(scrape_jobs)
+
+logging.info("Scheduler started. Press Ctrl+C to stop.")
+while True:
+    schedule.run_pending()
+    time.sleep(1)
